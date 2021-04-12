@@ -20,6 +20,16 @@ pub struct ExifData {
     pub ifds: Vec<IFD>,
 }
 
+impl ExifData {
+    pub fn collect_ifd_entries(&self) -> Vec<IFDEntry> {
+        let mut entries = Vec::new();
+        for ifd in self.ifds.iter() {
+            entries.append(&mut collect_ifd_entries(ifd))
+        }
+        entries
+    }
+}
+
 impl ParseableSegment<'_> for ExifData {
     fn marker() -> Option<JFIFMarkerCode> {
         // EXIF data is always stored in an APP1 segment

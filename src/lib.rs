@@ -4,6 +4,9 @@ pub mod exif;
 pub mod jfif;
 mod parse;
 
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
+
 use crate::jfif::JFIFSegment;
 
 #[derive(Debug)]
