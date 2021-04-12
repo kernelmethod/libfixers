@@ -1,6 +1,10 @@
 [package]
 name = "libfixers"
 version = "0.1.0"
+description = "JPEG/Exif parsing library, compilable to WebAssembly."
+readme = "README.md"
+license = "MIT"
+license-file = "LICENSE"
 authors = ["kernelmethod <17100608+kernelmethod@users.noreply.github.com>"]
 categories = [ "multimedia::images", "wasm" ]
 edition = "2018"
