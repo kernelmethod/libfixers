@@ -9,17 +9,12 @@ use serde::{Serialize, Deserialize};
 pub use marker_codes::JFIFMarkerCode;
 
 pub trait ParseableSegment<'a>: Serialize + Deserialize<'a> {
-    /// Returns the unique JFIF segment marker. Each JFIF segment in a JPEG image should start off
-    /// with the bytes `[0xff, segment.marker()]`.
-    ///
-    /// If this function returns `None`, it is assumed that the implementor of `ParseableSegment` is
-    /// able to match any segment marker. This is useful for "catch-all" segment types that are
-    /// allowed to match arbitrary JFIF segments.
-    fn marker() -> Option<JFIFMarkerCode> where Self: Sized;
+    /// Returns `true` if we believe that this `ParseableSegment` can parse this segment of the
+    /// input. Otherwise, returns `false`.
+    fn can_parse_segment(i: parse::Input) -> bool;
 
-    /// Return the segment parker for a parsed segment. If `Self::marker()` is not `None`, this
-    /// should be equal to `Self::marker()`.
-    fn parsed_marker(&self) -> JFIFMarkerCode;
+    /// Returns the segment marker for the parsed segment.
+    fn marker(&self) -> JFIFMarkerCode;
 
     /// Returns the size (in bytes) of the JFIF segment's data section. If the segment doesn't have
     /// a data section, this function should return `None`.
@@ -28,7 +23,7 @@ pub trait ParseableSegment<'a>: Serialize + Deserialize<'a> {
     /// Returns the full size of the JFIF segment, including the size bytes and the magic bytes at
     /// the start of the segment.
     fn segment_size(&self) -> usize {
-        match (self.data_size(), self.parsed_marker()) {
+        match (self.data_size(), self.marker()) {
             // For SOI and EOI, the segment size only consists of the two magic bytes
             (_, JFIFMarkerCode::SOI) | (_, JFIFMarkerCode::EOI) => 2,
 
@@ -63,12 +58,7 @@ pub trait ParseableSegment<'a>: Serialize + Deserialize<'a> {
             bytes::complete::take, combinator::verify, number::complete::be_u16,
         };
 
-        // If a marker is explicitly defined for this type, we ensure that the segment magic
-        // matches with that marker. Otherwise, we match an arbitrary 16-bit big-endian integer.
-        let (i, magic) = match Self::marker() {
-            Some(m) => context("Segment magic", verify(JFIFMarkerCode::parse, |&x| x == m))(i)?,
-            None => context("Segment magic", JFIFMarkerCode::parse)(i)?,
-        };
+        let (i, magic) = context("Segment magic", JFIFMarkerCode::parse)(i)?;
 
         let (i, data, data_size) = match magic {
             // For the markers SOI and EOI, there isn't any data associated with the tag.
@@ -117,12 +107,17 @@ pub struct UnknownJFIFSegment {
 }
 
 impl ParseableSegment<'_> for UnknownJFIFSegment {
-    fn marker() -> Option<JFIFMarkerCode> {
-        None
+    fn can_parse_segment(i: parse::Input) -> bool {
+        // We can parse arbitrary segments with this input so long as they begin with a valid
+        // marker
+        match JFIFMarkerCode::parse(i) {
+            Ok(_) => true,
+            Err(_) => false,
+        }
     }
 
-    fn parsed_marker(&self) -> JFIFMarkerCode {
-        return self.magic
+    fn marker(&self) -> JFIFMarkerCode {
+        self.magic
     }
 
     fn data_size(&self) -> Option<usize> {

@@ -14,13 +14,45 @@ pub enum APP0Segment {
     JFXX(JFXXData),
 }
 
+impl APP0Segment {
+    const MARKER: JFIFMarkerCode = JFIFMarkerCode::APPm(0x00);
+
+    /// Parse the segment identifier in the first five bytes of the data section. This should be
+    /// either "JFIF\x00" or "JFXX\x00", depending on what type of segment this is.
+    fn parse_data_bytes_header(i: parse::Input) -> parse::Result<&[u8]> {
+        use nom::{bytes::complete::take, combinator::verify, error::context};
+        let mut parser = context(
+            "APP0 segment identifier",
+            verify(take(5usize), |x: &[u8]| {
+                x == "JFIF\x00".as_bytes() || x == "JFXX\x00".as_bytes()
+            }),
+        );
+        parser(i)
+    }
+}
+
 impl ParseableSegment<'_> for APP0Segment {
-    fn marker() -> Option<JFIFMarkerCode> {
-        Some(JFIFMarkerCode::APPm(0x00))
+    fn can_parse_segment(i: parse::Input) -> bool {
+        use nom::{bytes::complete::tag, number::complete::be_u16, sequence::tuple};
+
+        // We should be able to parse any segment that starts with the following bytes:
+        //
+        //      APP0 marker + 2 size bytes + "JFIF\x00" or "JFXX\x00"
+        //
+        let mut parser = tuple((
+            tag(Self::MARKER.as_bytes()),
+            be_u16,
+            Self::parse_data_bytes_header,
+        ));
+
+        match parser(i) {
+            Ok(_) => true,
+            Err(_) => false,
+        }
     }
 
-    fn parsed_marker(&self) -> JFIFMarkerCode {
-        Self::marker().unwrap()
+    fn marker(&self) -> JFIFMarkerCode {
+        Self::MARKER
     }
 
     fn data_size(&self) -> Option<usize> {

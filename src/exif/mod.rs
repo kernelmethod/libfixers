@@ -21,6 +21,8 @@ pub struct ExifData {
 }
 
 impl ExifData {
+    const MARKER: JFIFMarkerCode = JFIFMarkerCode::APPm(0x01);
+
     pub fn collect_ifd_entries(&self) -> Vec<IFDEntry> {
         let mut entries = Vec::new();
         for ifd in self.ifds.iter() {
@@ -28,16 +30,41 @@ impl ExifData {
         }
         entries
     }
+
+    /// Verify that the data section contains the correct header bytes.
+    fn parse_data_bytes_header(i: parse::Input) -> parse::Result<&[u8]> {
+        use nom::{bytes::complete::take, combinator::verify};
+        let mut parser = context(
+            "Exif data section header",
+            verify(take(6usize), |x: &[u8]| x == "Exif\x00\x00".as_bytes())
+        );
+        parser(i)
+    }
 }
 
 impl ParseableSegment<'_> for ExifData {
-    fn marker() -> Option<JFIFMarkerCode> {
-        // EXIF data is always stored in an APP1 segment
-        Some(JFIFMarkerCode::APPm(0x01))
+    fn can_parse_segment(i: parse::Input) -> bool {
+        use nom::number::complete::be_u16;
+
+        // We should be able to parse this segment if the first few bytes match the following
+        // pattern:
+        //
+        //      APP1 header + 2 size bytes + "Exif\x00\x00"
+        //
+        let mut parser = tuple((
+            tag(Self::MARKER.as_bytes()),
+            be_u16,
+            Self::parse_data_bytes_header
+        ));
+
+        match parser(i) {
+            Ok(_) => true,
+            Err(_) => false,
+        }
     }
 
-    fn parsed_marker(&self) -> JFIFMarkerCode {
-        Self::marker().unwrap()
+    fn marker(&self) -> JFIFMarkerCode {
+        Self::MARKER
     }
 
     fn data_size(&self) -> Option<usize> {

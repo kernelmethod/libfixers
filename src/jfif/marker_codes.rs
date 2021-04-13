@@ -3,7 +3,7 @@
 
 use crate::impl_parse_for_enum;
 use serde::{Serialize, Deserialize};
-use std::convert::{Into, TryFrom};
+use std::convert::{From, TryFrom};
 
 /// Marker codes for JFIF segments. See ISO/IEC 10918-1: 1993(E), p. 36 for more information.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -102,6 +102,10 @@ impl JFIFMarkerCode {
             JFIFMarkerCode::RES(_) => "Reserved",
         }
     }
+
+    pub fn as_bytes(self) -> [u8; 2] {
+        u16::from(self).to_be_bytes()
+    }
 }
 
 impl TryFrom<u16> for JFIFMarkerCode {
@@ -172,9 +176,9 @@ impl TryFrom<u16> for JFIFMarkerCode {
     }
 }
 
-impl Into<u16> for JFIFMarkerCode {
-    fn into(self) -> u16 {
-        match self {
+impl From<JFIFMarkerCode> for u16 {
+    fn from(marker: JFIFMarkerCode) -> Self {
+        match marker {
             JFIFMarkerCode::TEM => 0xFF01,
 
             JFIFMarkerCode::SOF0 => 0xFFC0,
