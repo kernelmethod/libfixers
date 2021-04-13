@@ -6,7 +6,7 @@ use crate::{
     parse,
 };
 use derive_try_from_primitive::TryFromPrimitive;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum APP0Segment {
@@ -31,7 +31,7 @@ impl APP0Segment {
     }
 }
 
-impl ParseableSegment<'_> for APP0Segment {
+impl ParseableSegment for APP0Segment {
     fn can_parse_segment(i: parse::Input) -> bool {
         use nom::{bytes::complete::tag, number::complete::be_u16, sequence::tuple};
 
@@ -67,7 +67,13 @@ impl ParseableSegment<'_> for APP0Segment {
         _magic: JFIFMarkerCode,
         data_size: usize,
     ) -> parse::Result<Self> {
-        use nom::{bytes::complete::take, combinator::verify, error::context, number::complete::{be_u8, be_u16}, sequence::tuple};
+        use nom::{
+            bytes::complete::take,
+            combinator::verify,
+            error::context,
+            number::complete::{be_u16, be_u8},
+            sequence::tuple,
+        };
 
         // The next 5 bytes contain the segment identifier. This should be either "JFIF\x00" if
         // this is a JFIF APP0 segment, or "JFXX\x00" if it's a JFXX APP0 segment.
@@ -107,7 +113,8 @@ impl ParseableSegment<'_> for APP0Segment {
             (i, APP0Segment::JFIF(data))
         } else {
             // JFXX APP0 segment
-            let (i, thumbnail_format) = context("JFXX APP0 segment thumbnail format", ThumbnailFormat::parse)(i)?;
+            let (i, thumbnail_format) =
+                context("JFXX APP0 segment thumbnail format", ThumbnailFormat::parse)(i)?;
             let (i, thumbnail) = context("JFXX APP0 segment thumbnail", take(i.len()))(i)?;
             let data = JFXXData {
                 data_size,
@@ -142,8 +149,7 @@ pub struct JFXXData {
     thumbnail: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum DensityUnits {
     NoUnits = 0,
@@ -153,8 +159,7 @@ pub enum DensityUnits {
 
 impl_parse_for_enum!(DensityUnits, le_u8);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum ThumbnailFormat {
     JPEG = 10,

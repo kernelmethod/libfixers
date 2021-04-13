@@ -2,7 +2,7 @@
 //! allowed by the standard.
 
 use crate::impl_parse_for_enum;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::convert::{From, TryFrom};
 
 /// Marker codes for JFIF segments. See ISO/IEC 10918-1: 1993(E), p. 36 for more information.

@@ -1,17 +1,24 @@
 //! Traits and functions for dealing with JFIF data in an image.
 
+mod app0;
+mod comment;
 mod marker_codes;
-pub mod app0;
+mod xmp;
 
-use crate::parse;
-use nom::error::context;
-use serde::{Serialize, Deserialize};
+pub use app0::{APP0Segment,JFIFData,JFXXData};
+pub use comment::JPEGComment;
 pub use marker_codes::JFIFMarkerCode;
+pub use xmp::XMPSegment;
+use crate::{exif::ExifData, parse};
+use nom::error::context;
+use std::fmt;
 
-pub trait ParseableSegment<'a>: Serialize + Deserialize<'a> {
+pub trait ParseableSegment {
     /// Returns `true` if we believe that this `ParseableSegment` can parse this segment of the
     /// input. Otherwise, returns `false`.
-    fn can_parse_segment(i: parse::Input) -> bool;
+    fn can_parse_segment(i: parse::Input) -> bool
+    where
+        Self: Sized;
 
     /// Returns the segment marker for the parsed segment.
     fn marker(&self) -> JFIFMarkerCode;
@@ -54,9 +61,7 @@ pub trait ParseableSegment<'a>: Serialize + Deserialize<'a> {
     where
         Self: Sized,
     {
-        use nom::{
-            bytes::complete::take, combinator::verify, number::complete::be_u16,
-        };
+        use nom::{bytes::complete::take, combinator::verify, number::complete::be_u16};
 
         let (i, magic) = context("Segment magic", JFIFMarkerCode::parse)(i)?;
 
@@ -99,14 +104,14 @@ pub trait ParseableSegment<'a>: Serialize + Deserialize<'a> {
 
 /// A type implementing the `ParseableSegment` trait that can be used to match an arbitrary JFIF
 /// segment.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 pub struct UnknownJFIFSegment {
     pub magic: JFIFMarkerCode,
     pub data_size: usize,
     pub data: Vec<u8>,
 }
 
-impl ParseableSegment<'_> for UnknownJFIFSegment {
+impl ParseableSegment for UnknownJFIFSegment {
     fn can_parse_segment(i: parse::Input) -> bool {
         // We can parse arbitrary segments with this input so long as they begin with a valid
         // marker
@@ -146,34 +151,78 @@ impl ParseableSegment<'_> for UnknownJFIFSegment {
     }
 }
 
-/// Defines a segment of the JPEG/JFIF image.
-#[derive(Debug, Serialize, Deserialize)]
+/// An enum that wraps around different segment types that we can detect in a JPEG image.
 pub enum JFIFSegment {
-    APP0(app0::APP0Segment),
-    APP1(crate::exif::ExifData),
+    APP0Segment(APP0Segment),
+    CommentSegment(JPEGComment),
+    ExifSegment(ExifData),
+    XMPSegment(XMPSegment),
     Unknown(UnknownJFIFSegment),
+}
+
+impl fmt::Debug for JFIFSegment {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            JFIFSegment::APP0Segment(_) => write!(f, "APP0Segment"),
+            JFIFSegment::CommentSegment(_) => write!(f, "CommentSegment"),
+            JFIFSegment::ExifSegment(_) => write!(f, "ExifSegment"),
+            JFIFSegment::XMPSegment(_) => write!(f, "XMPSegment"),
+            JFIFSegment::Unknown(_) => write!(f, "Unknown segment"),
+        }
+    }
 }
 
 impl JFIFSegment {
     pub fn parse(i: parse::Input) -> parse::Result<Self> {
-        // Check the magic bytes of the next segment
-        let (_, magic) = context("Magic bytes", JFIFMarkerCode::parse)(&i)?;
+        // We run parsers over the next segment by first checking the segment magic, and then
+        // running over parsers for segments that start with that magic in order of priority.
+        let (_, magic) = context("Segment magic", JFIFMarkerCode::parse)(&i)?;
 
-        let (i, seg) = match magic {
-            JFIFMarkerCode::APPm(0x00) => {
-                let (i, seg) = context("APP0 segment", app0::APP0Segment::parse)(i)?;
-                (i, JFIFSegment::APP0(seg))
-            }
+        macro_rules! parser_func {
+            ($seg_type: ident, $data_type: ident) => {
+                || -> parse::Result<Self> {
+                    let (i, data) =
+                        context(stringify!(JFIFSegment::$seg_type), $data_type::parse)(i)?;
+                    Ok((i, JFIFSegment::$seg_type(data)))
+                }
+            };
+        }
+
+        let parse_comment = parser_func!(CommentSegment, JPEGComment);
+        let parse_exif = parser_func!(ExifSegment, ExifData);
+        let parse_xmp = parser_func!(XMPSegment, XMPSegment);
+        let parse_unknown = parser_func!(Unknown, UnknownJFIFSegment);
+
+        match magic {
             JFIFMarkerCode::APPm(0x01) => {
-                let (i, seg) = context("APP1 segment", crate::exif::ExifData::parse)(i)?;
-                (i, JFIFSegment::APP1(seg))
+                if ExifData::can_parse_segment(&i) {
+                    parse_exif()
+                } else if XMPSegment::can_parse_segment(&i) {
+                    parse_xmp()
+                } else {
+                    parse_unknown()
+                }
             }
-            _ => {
-                let (i, seg) = context("Unknown segment", UnknownJFIFSegment::parse)(i)?;
-                (i, JFIFSegment::Unknown(seg))
-            }
-        };
 
-        Ok((i, seg))
+            JFIFMarkerCode::COM => {
+                if JPEGComment::can_parse_segment(&i) {
+                    parse_comment()
+                } else {
+                    parse_unknown()
+                }
+            }
+
+            _ => parse_unknown(),
+        }
+    }
+
+    pub fn data(&self) -> &dyn ParseableSegment {
+        match self {
+            JFIFSegment::APP0Segment(data) => data,
+            JFIFSegment::CommentSegment(data) => data,
+            JFIFSegment::ExifSegment(data) => data,
+            JFIFSegment::XMPSegment(data) => data,
+            JFIFSegment::Unknown(data) => data,
+        }
     }
 }

@@ -36,13 +36,13 @@ impl ExifData {
         use nom::{bytes::complete::take, combinator::verify};
         let mut parser = context(
             "Exif data section header",
-            verify(take(6usize), |x: &[u8]| x == "Exif\x00\x00".as_bytes())
+            verify(take(6usize), |x: &[u8]| x == "Exif\x00\x00".as_bytes()),
         );
         parser(i)
     }
 }
 
-impl ParseableSegment<'_> for ExifData {
+impl ParseableSegment for ExifData {
     fn can_parse_segment(i: parse::Input) -> bool {
         use nom::number::complete::be_u16;
 
@@ -54,13 +54,9 @@ impl ParseableSegment<'_> for ExifData {
         let mut parser = tuple((
             tag(Self::MARKER.as_bytes()),
             be_u16,
-            Self::parse_data_bytes_header
+            Self::parse_data_bytes_header,
         ));
-
-        match parser(i) {
-            Ok(_) => true,
-            Err(_) => false,
-        }
+        parser(i).is_ok()
     }
 
     fn marker(&self) -> JFIFMarkerCode {
@@ -127,8 +123,7 @@ impl TIFFHeader {
 }
 
 /// Two-byte tag representing the byte alignment for the TIFF data.
-#[derive(Debug, Clone, Copy, TryFromPrimitive, PartialEq, Eq)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, TryFromPrimitive, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u16)]
 pub enum TIFFByteAlignment {
     LittleEndian = 0x4949, // "II" = Intel-type byte alignment
@@ -505,7 +500,7 @@ impl IFDDataFormat {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub enum IFDDataContents {
     UnsignedByte(u8),
     AsciiString(String),

@@ -3,7 +3,7 @@
 # Script for generating first test image.
 
 INFILE="$1"
-OUTDIR="."
+OUTDIR="outdir"
 OUTFILE="ex1.jpg"
 
 mkdir -p "${OUTDIR}"
