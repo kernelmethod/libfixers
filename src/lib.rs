@@ -40,15 +40,15 @@ impl JPEGFile {
 
     /// Get all IFD entries from the file's Exif data.
     pub fn exif_metadata(&self) -> Vec<exif::IFDEntry> {
-        let mut entries = Vec::new();
-        for mut seg_entries in self.segments.iter().filter_map(|seg| match seg {
-            JFIFSegment::ExifSegment(data) => Some(data.collect_ifd_entries()),
-            _ => None,
-        }) {
-            entries.append(&mut seg_entries);
-        }
-
-        entries
+        self.segments
+            .iter()
+            .filter_map(|seg| match seg {
+                JFIFSegment::ExifSegment(data) => Some(data.collect_ifd_entries()),
+                _ => None,
+            })
+            .fold(Vec::new(), |acc, x| {
+                acc.into_iter().chain(x).collect::<Vec<_>>()
+            })
     }
 
     /// Get all comments in the file.

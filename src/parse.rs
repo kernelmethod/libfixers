@@ -69,6 +69,7 @@ macro_rules! impl_parse_for_enum {
     ($type: ident, $number_parser: ident) => {
         impl $type {
             pub fn parse(i: crate::parse::Input) -> crate::parse::Result<Self> {
+                #[allow(unused_imports)]
                 use nom::{
                     combinator::map_res,
                     error::{context, ErrorKind},
