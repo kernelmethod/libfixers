@@ -2,9 +2,9 @@
 
 use crate::{
     exif::{self, IFDDataContents, IFDDataFormat, IFDTag},
-    jfif::JFIFSegment,
     JPEGFile,
 };
+use std::convert::TryFrom;
 use wasm_bindgen::prelude::*;
 
 /// Perform some preprocessing on the IFD entries extracted by the Exif parser so that they're
@@ -26,20 +26,23 @@ fn preprocess_ifd_entries(entries: &mut [exif::IFDEntry]) {
                     .collect();
             }
             // Convert GPS coordinates to a single floating point value
-            (_, IFDTag::GPSLatitude) | (_, IFDTag::GPSLongitude) => match e.content[..3] {
-                [IFDDataContents::UnsignedRational(x1, y1), IFDDataContents::UnsignedRational(x2, y2), IFDDataContents::UnsignedRational(x3, y3)] =>
-                {
-                    let degrees = (x1 as f64) / (y1 as f64);
-                    let minutes = (x2 as f64) / (y2 as f64);
-                    let seconds = (x3 as f64) / (y3 as f64);
-                    let loc = exif::gps::degrees_to_decimal(degrees, minutes, seconds);
+            (_, IFDTag::GPSLatitude) | (_, IFDTag::GPSLongitude) => {
+                let coords: Result<Vec<_>, _> = e.content.iter().map(|x| f64::try_from(x)).collect();
+                match coords {
+                    Ok(coords) => {
+                        if coords.len() != 3 {
+                            continue
+                        }
+                        let (degrees, minutes, seconds) = (coords[0], coords[1], coords[2]);
+                        let loc = exif::gps::degrees_to_decimal(degrees, minutes, seconds);
 
-                    // We round to six decimal places before returning the coordinate
-                    let loc = (loc * 1e6).round() / 1e6;
-                    e.content = vec![IFDDataContents::DoubleFloat(loc)];
+                        // We round to six decimal places before returning the coordinate
+                        let loc = (loc * 1e6).round() / 1e6;
+                        e.content = vec![IFDDataContents::DoubleFloat(loc)];
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             // Convert all other rational datatypes to floating point
             (IFDDataFormat::UnsignedRational, _) | (IFDDataFormat::SignedRational, _) => {
                 e.content = e
@@ -68,18 +71,7 @@ pub fn extract_exif_data(i: &[u8]) -> Result<JsValue, JsValue> {
     match JPEGFile::parse(i) {
         Ok((_, img)) => {
             // Try to extract Exif data, if we can find any
-            let mut exif_entries = img
-                .segments
-                .iter()
-                .filter_map(|s| match s {
-                    JFIFSegment::APP1(data) => Some(data),
-                    _ => None,
-                })
-                .map(|x| x.collect_ifd_entries())
-                .fold(Vec::new(), |acc, x| {
-                    acc.into_iter().chain(x).collect::<Vec<_>>()
-                });
-
+            let mut exif_entries = img.exif_metadata();
             if exif_entries.len() == 0 {
                 Err(JsValue::from_str("No Exif data was found in the image"))
             } else {

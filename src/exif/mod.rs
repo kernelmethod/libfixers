@@ -10,6 +10,7 @@ use crate::{
 use derive_try_from_primitive::TryFromPrimitive;
 use nom::{bytes::complete::tag, error::context, sequence::tuple, Offset};
 use serde::{ser::SerializeTuple, Deserialize, Serialize, Serializer};
+use std::convert::TryFrom;
 
 /// The Exif data structure containing all of the metadata specified in
 /// an Exif section.
@@ -423,7 +424,6 @@ impl IFDTag {
     /// Parse an IFD tag.
     pub fn parse(i: parse::Input, alignment: TIFFByteAlignment) -> parse::Result<Self> {
         use nom::{combinator::map_res, error::ErrorKind};
-        use std::convert::TryFrom;
 
         let parser = map_res(
             |x| alignment.parse_u16(x),
@@ -435,7 +435,6 @@ impl IFDTag {
 
     /// Parse an IFD tag. If the tag type is unknown, replace it with `IFDTag::Unknown`.
     pub fn parse_unknown(i: parse::Input, alignment: TIFFByteAlignment) -> parse::Result<Self> {
-        use std::convert::TryFrom;
         let (i, tag) = context("IFDTag", |x| alignment.parse_u16(x))(i)?;
         match Self::try_from(tag) {
             Ok(tag) => Ok((i, tag)),
@@ -473,7 +472,6 @@ pub enum IFDDataFormat {
 impl IFDDataFormat {
     pub fn parse(i: parse::Input, alignment: TIFFByteAlignment) -> parse::Result<Self> {
         use nom::{combinator::map_res, error::ErrorKind};
-        use std::convert::TryFrom;
 
         let parser = map_res(
             |x| alignment.parse_u16(x),
@@ -643,6 +641,26 @@ impl Serialize for IFDDataContents {
             }
             IFDDataContents::SingleFloat(x) => ser.serialize_f32(*x),
             IFDDataContents::DoubleFloat(x) => ser.serialize_f64(*x),
+        }
+    }
+}
+
+impl TryFrom<&IFDDataContents> for f64 {
+    type Error = &'static str;
+
+    fn try_from(data: &IFDDataContents) -> Result<Self, Self::Error> {
+        match data {
+            IFDDataContents::UnsignedByte(x) => Ok(*x as f64),
+            IFDDataContents::UnsignedShort(x) => Ok(*x as f64),
+            IFDDataContents::UnsignedLong(x) => Ok(*x as f64),
+            IFDDataContents::SignedByte(x) => Ok(*x as f64),
+            IFDDataContents::SignedShort(x) => Ok(*x as f64),
+            IFDDataContents::SignedLong(x) => Ok(*x as f64),
+            IFDDataContents::SingleFloat(x) => Ok(*x as f64),
+            IFDDataContents::DoubleFloat(x) => Ok(*x as f64),
+            IFDDataContents::UnsignedRational(x,y) => Ok((*x as f64) / (*y as f64)),
+            IFDDataContents::SignedRational(x,y) => Ok((*x as f64) / (*y as f64)),
+            _ => Err("Cannot convert data type to f64"),
         }
     }
 }
