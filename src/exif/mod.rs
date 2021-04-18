@@ -1,6 +1,7 @@
 //! Parsing for the Exif data structure.
 
 pub mod gps;
+mod tags;
 
 use crate::{
     impl_parse_for_enum,
@@ -8,9 +9,10 @@ use crate::{
     parse,
 };
 use derive_try_from_primitive::TryFromPrimitive;
-use nom::{bytes::complete::tag, error::context, sequence::tuple, Offset};
+use nom::{bytes::complete::tag, error::context, sequence::tuple};
 use serde::{ser::SerializeTuple, Deserialize, Serialize, Serializer};
 use std::convert::TryFrom;
+pub use tags::IFDTag;
 
 /// The Exif data structure containing all of the metadata specified in
 /// an Exif section.
@@ -40,6 +42,43 @@ impl ExifData {
             verify(take(6usize), |x: &[u8]| x == "Exif\x00\x00".as_bytes()),
         );
         parser(i)
+    }
+
+    /// Convert an IFD segment into a byte array
+    pub fn as_bytes(&self) -> Vec<u8> {
+        let mut components = Vec::new();
+
+        // Start by adding the "Exif\x00\x00" header that always comes at the start of an Exif
+        // segment
+        components.push(b"Exif\x00\x00".to_vec());
+
+        // Add the TIFF header
+        let header = self.tiff_header.as_bytes();
+        let alignment = self.tiff_header.alignment;
+        components.push(header.to_vec());
+
+        // Now add the IFD entries.
+        // TODO: consider sub-IFDs
+        let mut tiff_header_offset = header.len();
+        for ifd in self.ifds.iter() {
+            // The offset passed to ifd.as_bytes is the offset of the IFD relative to the TIFF
+            // header
+            let ifd_data = ifd.as_bytes(alignment, tiff_header_offset);
+            tiff_header_offset += ifd_data.len();
+            components.push(ifd_data);
+        }
+
+        // Concatenate all of the components together and return them as a single byte array
+        let data = components
+            .iter()
+            .flatten()
+            .map(|x| x.to_owned())
+            .collect::<Vec<_>>();
+
+        // Now add the segment header at the start of the data
+        let marker = self.marker().as_bytes().to_vec();
+        let data_size = ((data.len() + 2) as u16).to_be_bytes().to_vec();
+        [marker, data_size, data].concat()
     }
 }
 
@@ -96,7 +135,7 @@ impl ParseableSegment for ExifData {
 }
 
 /// TIFF header used within the Exif data structure to specify its layout.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TIFFHeader {
     pub alignment: TIFFByteAlignment,
     pub initial_offset: u32,
@@ -120,6 +159,31 @@ impl TIFFHeader {
                 initial_offset,
             },
         ))
+    }
+
+    pub fn as_bytes(&self) -> [u8; 8] {
+        // Header consists of 12 bytes for alignment + alignment check + initial offset
+        let (check, initial_offset) = match self.alignment {
+            TIFFByteAlignment::LittleEndian => (
+                (0x2au16).to_le_bytes(),
+                (self.initial_offset as u32).to_le_bytes(),
+            ),
+            TIFFByteAlignment::BigEndian => (
+                (0x2au16).to_be_bytes(),
+                (self.initial_offset as u32).to_be_bytes(),
+            ),
+        };
+
+        let alignment = (self.alignment as u16).to_be_bytes();
+
+        // TODO: find a better way to convert multiple static-sized arrays into a single
+        // static-sized array?
+        let mut result = [0; 8];
+        result[0..2].copy_from_slice(&alignment);
+        result[2..4].copy_from_slice(&check);
+        result[4..8].copy_from_slice(&initial_offset);
+
+        result
     }
 }
 
@@ -218,6 +282,109 @@ impl IFD {
         };
         Ok((i, ifd))
     }
+
+    /// Convert an IFD to a byte array. `alignment` is the byte alignment being used by this Exif
+    /// segment, and `offset` is the offset (in bytes) between the TIFF header and the start of
+    /// this IFD.
+    pub fn as_bytes(&self, alignment: TIFFByteAlignment, offset: usize) -> Vec<u8> {
+        let mut components = Vec::new();
+
+        // Start by adding the number of entries in the IFD
+        let size = match alignment {
+            TIFFByteAlignment::BigEndian => (self.entries.len() as u16).to_be_bytes(),
+            TIFFByteAlignment::LittleEndian => (self.entries.len() as u16).to_le_bytes(),
+        };
+        components.push(size.to_vec());
+
+        // Iterate over each IFD. If the size of the IFD's data is > 12 bytes, we store it after
+        // all of the entries have been specified.
+        //
+        // Note that the initial offset for data is calculated as
+        //
+        //      data_offset = offset from TIFF header + 2 bytes for # of IFD entries
+        //                      + (# of entries) * (12 bytes/IFD entry)
+        //                      + 4 bytes for offset to next IFD
+        //
+        let mut data_offset = offset + 2 + self.entries.len() * 12 + 4;
+        let mut ifd_data = Vec::new();
+        for entry in self.entries.iter() {
+            let mut data = match alignment {
+                TIFFByteAlignment::BigEndian => {
+                    components.push(entry.tagtype.to_be_bytes().to_vec());
+                    components.push(entry.data_format.to_be_bytes().to_vec());
+                    components.push(entry.n_components.to_be_bytes().to_vec());
+
+                    // TODO: currently entry.content is allowed to contain data of multiple types.
+                    // We either need to restrict this to just one type, or else handle the case
+                    // where we have multiple data types somehow.
+                    entry
+                        .content
+                        .iter()
+                        .map(|x| x.to_be_bytes())
+                        .flatten()
+                        .map(|x| x.to_owned())
+                        .collect::<Vec<_>>()
+                }
+                TIFFByteAlignment::LittleEndian => {
+                    components.push(entry.tagtype.to_le_bytes().to_vec());
+                    components.push(entry.data_format.to_le_bytes().to_vec());
+                    components.push(entry.n_components.to_le_bytes().to_vec());
+
+                    // TODO: currently entry.content is allowed to contain data of multiple types.
+                    // We either need to restrict this to just one type, or else handle the case
+                    // where we have multiple data types somehow.
+                    entry
+                        .content
+                        .iter()
+                        .map(|x| x.to_le_bytes())
+                        .flatten()
+                        .map(|x| x.to_owned())
+                        .collect::<Vec<_>>()
+                }
+            };
+
+            let data_size = entry.n_components * (entry.data_format.bytes_per_component() as u32);
+            if data_size <= 4 {
+                // Can put the data in the next four bytes of the IFD. If the size of the data is
+                // strictly < 4, we'll need to pad it to get to four bytes.
+                if data.len() < 4 {
+                    data.append(&mut vec![0u8; 4 - data.len()]);
+                }
+
+                components.push(data);
+            } else {
+                // Have to put an offset to the data section in the next four bytes, and then add
+                // the data to the data section.
+                let offset = match alignment {
+                    TIFFByteAlignment::BigEndian => (data_offset as u32).to_be_bytes(),
+                    TIFFByteAlignment::LittleEndian => (data_offset as u32).to_le_bytes(),
+                };
+                components.push(offset.to_vec());
+                data_offset += data.len();
+                ifd_data.push(data);
+            }
+        }
+
+        // Add the offset to the next IFD
+        let offset_to_next = match (self.offset_to_next, alignment) {
+            (None, _) => 0u32.to_be_bytes(),
+            (Some(x), TIFFByteAlignment::BigEndian) => x.to_be_bytes(),
+            (Some(x), TIFFByteAlignment::LittleEndian) => x.to_le_bytes(),
+        };
+        components.push(offset_to_next.to_vec());
+        components.push(
+            ifd_data
+                .iter()
+                .flatten()
+                .map(|x| x.to_owned())
+                .collect::<Vec<_>>(),
+        );
+        components
+            .iter()
+            .flatten()
+            .map(|x| x.to_owned())
+            .collect::<Vec<_>>()
+    }
 }
 
 /// Recursively crawl an IFD and all linked IFDs to retrieve all of the `IFDEntry` instances they
@@ -232,12 +399,11 @@ pub fn collect_ifd_entries(ifd: &IFD) -> Vec<IFDEntry> {
 }
 
 /// Represents a single IFD (Image File Directory) entry
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IFDEntry {
     pub tagtype: IFDTag,
     pub data_format: IFDDataFormat,
     pub n_components: u32,
-    pub content_offset: u32,
     pub content: Vec<IFDDataContents>,
 }
 
@@ -261,15 +427,14 @@ impl IFDEntry {
         let mut parser = context("IFD entry contents", |x| {
             IFDDataContents::parse(x, data_format, n_components, alignment)
         });
-        let (i, content_offset, content) = if content_size <= 4 {
+        let (i, content) = if content_size <= 4 {
             let input_after_data = &i[4..];
             let (_, content) = parser(&i)?;
-            let offset = (original_input.offset(input_after_data) + 4) as u32;
-            (input_after_data, offset, content)
+            (input_after_data, content)
         } else {
             let (i, offset) = context("IFD entry offset", |x| alignment.parse_u32(x))(i)?;
             let (_, content) = parser(&original_input[(offset as usize)..])?;
-            (i, offset, content)
+            (i, content)
         };
 
         Ok((
@@ -278,175 +443,16 @@ impl IFDEntry {
                 tagtype,
                 data_format,
                 n_components,
-                content_offset,
                 content,
             },
         ))
     }
 }
 
-#[derive(Debug, Clone, Copy, TryFromPrimitive, PartialEq, Eq, Serialize, Deserialize)]
-#[repr(u16)]
-pub enum IFDTag {
-    // Catch-all tag for unknown entry types
-    Unknown = 0xffff,
-
-    // GPS tags
-    // Taken from https://www.exiftool.org/TagNames/GPS.html
-    GPSVersionID = 0x0000,
-    GPSLatitudeRef = 0x0001,
-    GPSLatitude = 0x0002,
-    GPSLongitudeRef = 0x0003,
-    GPSLongitude = 0x0004,
-    GPSAltitudeRef = 0x0005,
-    GPSAltitude = 0x0006,
-    GPSTimeStamp = 0x0007,
-    GPSSatellites = 0x0008,
-    GPSStatus = 0x0009,
-    GPSMeasureMode = 0x000a,
-    GPSDOP = 0x000b,
-    GPSSpeedRef = 0x000c,
-    GPSSpeed = 0x000d,
-    GPSTrackRef = 0x000e,
-    GPSTrack = 0x000f,
-    GPSImgDirectionRef = 0x0010,
-    GPSImgDirection = 0x0011,
-    GPSMapDatum = 0x0012,
-    GPSDestLatitudeRef = 0x0013,
-    GPSDestLatitude = 0x0014,
-    GPSDestLongitudeRef = 0x0015,
-    GPSDestLongitude = 0x0016,
-    GPSDestBearingRef = 0x0017,
-    GPSDestBearing = 0x0018,
-    GPSDestDistanceRef = 0x0019,
-    GPSDestDistance = 0x001a,
-    GPSProcessingMethod = 0x001b,
-    GPSAreaInformation = 0x001c,
-    GPSDateStamp = 0x001d,
-    GPSDifferential = 0x001e,
-    GPSHPositioningError = 0x001f,
-
-    // Taken from https://www.exiftool.org/TagNames/EXIF.html
-    ImageWidth = 0x0100,
-    ImageLength = 0x0101,
-    BitsPerSample = 0x0102,
-    Compression = 0x0103,
-    PhotometricInterpretation = 0x0106,
-    ImageDescription = 0x010e,
-    Make = 0x010f,
-    Model = 0x0110,
-    StripOffsets = 0x0111,
-    Orientation = 0x0112,
-    SamplesPerPixel = 0x0115,
-    RowsPerStrip = 0x0116,
-    StripByteCounts = 0x0117,
-    XResolution = 0x011a,
-    YResolution = 0x011b,
-    PlanarConfiguration = 0x011c,
-    ResolutionUnit = 0x0128,
-    Software = 0x0131,
-    DateTime = 0x0132,
-    WhitePoint = 0x013e,
-    PrimaryChromaticities = 0x013f,
-    JpegIFByteCount = 0x0202,
-    YCbCrCoefficients = 0x0211,
-    YCbCrSubSampling = 0x0212,
-    YCbCrPositioning = 0x0213,
-    ReferenceBlackWhite = 0x0214,
-
-    Copyright = 0x8298,
-    ExposureTime = 0x829a,
-    FNumber = 0x829d,
-    ExifOffset = 0x8769,
-    ExposureProgram = 0x8822,
-    GPSInfo = 0x8825,
-    ISOSpeedRatings = 0x8827,
-
-    ExifVersion = 0x9000,
-    DateTimeOriginal = 0x9003,
-    DateTimeDigitized = 0x9004,
-    ComponentConfiguration = 0x9101,
-    CompressedBitsPerPixel = 0x9201,
-    ApertureValue = 0x9202,
-    BrightnessValue = 0x9203,
-    ExposureBiasValue = 0x9204,
-    MaxApertureValue = 0x9205,
-    SubjectDistance = 0x9206,
-    MeteringMode = 0x9207,
-    LightSource = 0x9208,
-    Flash = 0x9209,
-    FocalLength = 0x920a,
-    Noise = 0x920d,
-    ImageNumber = 0x9211,
-    SecurityClassification = 0x9212,
-    ImageHistory = 0x9213,
-    SubjectArea = 0x9214,
-    ExposureIndex = 0x9215,
-    TIFFEPStandardID = 0x9216,
-    MakerNote = 0x927c,
-    UserComment = 0x9286,
-    SubSecTime = 0x9290,
-    SubSecTimeOriginal = 0x9291,
-    SubSecTimeDigitized = 0x9292,
-
-    FlashPixVersion = 0xa000,
-    ColorSpace = 0xa001,
-    ExifImageWidth = 0xa002,
-    ExifImageHeight = 0xa003,
-    RelatedSoundFile = 0xa004,
-    ExifInteroperabilityOffset = 0xa005,
-    FlashEnergy = 0xa20b,
-    SpatialFrequencyResponse = 0xa20c,
-    FocalPlaneXResolution = 0xa20e,
-    FocalPlaneYResolution = 0xa20f,
-    FocalPlaneResolutionUnit = 0xa210,
-    SubjectLocation = 0xa214,
-    ExposureIndexExifIFD = 0xa215,
-    SensingMethod = 0xa217,
-    FileSource = 0xa300,
-    SceneType = 0xa301,
-    CFAPattern = 0xa302,
-    CustomRendered = 0xa401,
-    ExposureMode = 0xa402,
-    WhiteBalance = 0xa403,
-    DigitalZoomRatio = 0xa404,
-    FocalLengthIn35mmFormat = 0xa405,
-    SceneCaptureType = 0xa406,
-    GainControl = 0xa407,
-    Contrast = 0xa408,
-    Saturation = 0xa409,
-    Sharpness = 0xa40a,
-    DeviceSettingDescription = 0xa40b,
-    SubjectDistanceRange = 0xa40c,
-}
-
-impl IFDTag {
-    /// Parse an IFD tag.
-    pub fn parse(i: parse::Input, alignment: TIFFByteAlignment) -> parse::Result<Self> {
-        use nom::{combinator::map_res, error::ErrorKind};
-
-        let parser = map_res(
-            |x| alignment.parse_u16(x),
-            |x| Self::try_from(x).map_err(|_| ErrorKind::Alt),
-        );
-
-        context("IFDTag", parser)(i)
-    }
-
-    /// Parse an IFD tag. If the tag type is unknown, replace it with `IFDTag::Unknown`.
-    pub fn parse_unknown(i: parse::Input, alignment: TIFFByteAlignment) -> parse::Result<Self> {
-        let (i, tag) = context("IFDTag", |x| alignment.parse_u16(x))(i)?;
-        match Self::try_from(tag) {
-            Ok(tag) => Ok((i, tag)),
-            Err(_) => Ok((i, IFDTag::Unknown)),
-        }
-    }
-}
-
 /// Represents all of the possible values that a ResolutionUnit IFD field can adopt.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, TryFromPrimitive)]
 #[repr(u16)]
-pub enum ResolutionUnitEnum {
+pub enum ResolutionUnit {
     NoUnit = 1,
     Inch = 2,
     Centimeter = 3,
@@ -495,6 +501,18 @@ impl IFDDataFormat {
             IFDDataFormat::SingleFloat => 4,
             IFDDataFormat::DoubleFloat => 8,
         }
+    }
+
+    /// Return the memory representation of this `IFDDataFormat` as a byte array in little-endian
+    /// byte order.
+    pub fn to_le_bytes(self) -> [u8; 2] {
+        (self as u16).to_le_bytes()
+    }
+
+    /// Return the memory representation of this `IFDDataFormat` as a byte array in big-endian byte
+    /// order.
+    pub fn to_be_bytes(self) -> [u8; 2] {
+        (self as u16).to_be_bytes()
     }
 }
 
@@ -611,6 +629,40 @@ impl IFDDataContents {
             }
         }
     }
+
+    pub fn to_le_bytes(&self) -> Vec<u8> {
+        match self {
+            IFDDataContents::UnsignedByte(x) => vec![*x],
+            IFDDataContents::AsciiString(x) => [x.as_bytes().to_vec(), b"\x00".to_vec()].concat(),
+            IFDDataContents::UnsignedShort(x) => x.to_le_bytes().to_vec(),
+            IFDDataContents::UnsignedLong(x) => x.to_le_bytes().to_vec(),
+            IFDDataContents::UnsignedRational(x, y) => [x.to_le_bytes(), y.to_le_bytes()].concat(),
+            IFDDataContents::SignedByte(x) => x.to_le_bytes().to_vec(),
+            IFDDataContents::Undefined(x) => x.to_vec(),
+            IFDDataContents::SignedShort(x) => x.to_le_bytes().to_vec(),
+            IFDDataContents::SignedLong(x) => x.to_le_bytes().to_vec(),
+            IFDDataContents::SignedRational(x, y) => [x.to_le_bytes(), y.to_le_bytes()].concat(),
+            IFDDataContents::SingleFloat(x) => x.to_le_bytes().to_vec(),
+            IFDDataContents::DoubleFloat(x) => x.to_le_bytes().to_vec(),
+        }
+    }
+
+    pub fn to_be_bytes(&self) -> Vec<u8> {
+        match self {
+            IFDDataContents::UnsignedByte(x) => vec![*x],
+            IFDDataContents::AsciiString(x) => [x.as_bytes().to_vec(), b"\x00".to_vec()].concat(),
+            IFDDataContents::UnsignedShort(x) => x.to_be_bytes().to_vec(),
+            IFDDataContents::UnsignedLong(x) => x.to_be_bytes().to_vec(),
+            IFDDataContents::UnsignedRational(x, y) => [x.to_be_bytes(), y.to_be_bytes()].concat(),
+            IFDDataContents::SignedByte(x) => x.to_be_bytes().to_vec(),
+            IFDDataContents::Undefined(x) => x.to_vec(),
+            IFDDataContents::SignedShort(x) => x.to_be_bytes().to_vec(),
+            IFDDataContents::SignedLong(x) => x.to_be_bytes().to_vec(),
+            IFDDataContents::SignedRational(x, y) => [x.to_be_bytes(), y.to_be_bytes()].concat(),
+            IFDDataContents::SingleFloat(x) => x.to_be_bytes().to_vec(),
+            IFDDataContents::DoubleFloat(x) => x.to_be_bytes().to_vec(),
+        }
+    }
 }
 
 impl Serialize for IFDDataContents {
@@ -658,8 +710,8 @@ impl TryFrom<&IFDDataContents> for f64 {
             IFDDataContents::SignedLong(x) => Ok(*x as f64),
             IFDDataContents::SingleFloat(x) => Ok(*x as f64),
             IFDDataContents::DoubleFloat(x) => Ok(*x as f64),
-            IFDDataContents::UnsignedRational(x,y) => Ok((*x as f64) / (*y as f64)),
-            IFDDataContents::SignedRational(x,y) => Ok((*x as f64) / (*y as f64)),
+            IFDDataContents::UnsignedRational(x, y) => Ok((*x as f64) / (*y as f64)),
+            IFDDataContents::SignedRational(x, y) => Ok((*x as f64) / (*y as f64)),
             _ => Err("Cannot convert data type to f64"),
         }
     }
@@ -692,5 +744,94 @@ mod test {
             _ => false,
         };
         assert!(result);
+    }
+
+    use super::{ExifData, IFD};
+    use super::{IFDDataContents, IFDDataFormat, IFDEntry, IFDTag};
+    use crate::jfif::ParseableSegment;
+
+    #[test]
+    fn test_parse_exif_segment() {
+        use super::ResolutionUnit;
+
+        // Create three IFD entries:
+        // - XResolution
+        // - DateTime
+        // - ResolutionUnits
+        let entries = vec![
+            IFDEntry {
+                tagtype: IFDTag::XResolution,
+                data_format: IFDDataFormat::UnsignedRational,
+                n_components: 1,
+                content: vec![IFDDataContents::UnsignedRational(72, 1)],
+            },
+            IFDEntry {
+                tagtype: IFDTag::DateTime,
+                data_format: IFDDataFormat::AsciiString,
+                n_components: (b"2021:01:02 03:04:05\x00".len() as u32),
+                content: vec![IFDDataContents::AsciiString(
+                    "2021:01:02 03:04:05".to_string(),
+                )],
+            },
+            IFDEntry {
+                tagtype: IFDTag::ResolutionUnit,
+                data_format: IFDDataFormat::UnsignedShort,
+                n_components: 1,
+                content: vec![IFDDataContents::UnsignedShort(ResolutionUnit::Inch as u16)],
+            },
+        ];
+
+        let ifd = IFD {
+            num_entries: (entries.len() as u16),
+            entries: entries,
+            subifds: vec![],
+            offset_to_next: None,
+        };
+
+        let tiff_header = TIFFHeader {
+            alignment: TIFFByteAlignment::LittleEndian,
+            initial_offset: 8,
+        };
+
+        let exif = ExifData {
+            data_size: 0,
+            tiff_header,
+            ifds: vec![ifd],
+        };
+
+        // Attempt to re-parse the segment from its bytes
+        let data = exif.as_bytes();
+        let exif_parsed = ExifData::parse(&data);
+        assert!(exif_parsed.is_ok());
+        let (_, exif_parsed) = exif_parsed.unwrap();
+
+        // Check the TIFF headers
+        assert_eq!(exif_parsed.tiff_header, tiff_header);
+
+        // Check the IFD entries
+        let entries = &exif.ifds[0].entries;
+        let parsed_entries = &exif_parsed.ifds[0].entries;
+        assert_eq!(parsed_entries.len(), 3);
+
+        let parsed_tags = parsed_entries.iter().map(|x| x.tagtype).collect::<Vec<_>>();
+        assert_eq!(
+            parsed_tags,
+            vec![
+                IFDTag::XResolution,
+                IFDTag::DateTime,
+                IFDTag::ResolutionUnit
+            ]
+        );
+
+        let content = entries.iter().map(|x| &x.content).collect::<Vec<_>>();
+        let parsed_content = parsed_entries
+            .iter()
+            .map(|x| &x.content)
+            .collect::<Vec<_>>();
+        assert_eq!(parsed_content, content);
+
+        // Ensure that we could turn the parsed Exif data back to a byte array and get the same
+        // result as we did with exif.as_bytes()
+        assert_eq!(data, exif_parsed.as_bytes());
     }
 }
