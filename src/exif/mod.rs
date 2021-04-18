@@ -571,60 +571,70 @@ impl IFDDataContents {
         n_components: u32,
         alignment: TIFFByteAlignment,
     ) -> parse::Result<Self> {
-        use nom::bytes::complete::take_while;
+        use nom::bytes::complete::{take, take_while};
         let n_components = n_components as usize;
 
         match format {
             IFDDataFormat::UnsignedByte => {
-                let (i, x) = alignment.parse_u8(i)?;
+                let (i, x) =
+                    context("IFDDataContents::UnsignedByte", |i| alignment.parse_u8(i))(i)?;
                 Ok((i, IFDDataContents::UnsignedByte(x)))
             }
             IFDDataFormat::AsciiString => {
-                let (i, s) = take_while(|x| x != 0)(i)?;
+                let (i, s) = context("IFDDataContents::AsciiString", take_while(|x| x != 0))(i)?;
                 // TODO: check that s.len() + 1 == n_components
                 let s = String::from_utf8_lossy(s);
                 Ok((i, IFDDataContents::AsciiString(s.to_string())))
             }
             IFDDataFormat::UnsignedShort => {
-                let (i, x) = alignment.parse_u16(i)?;
+                let (i, x) =
+                    context("IFDDataContents::UnsignedShort", |i| alignment.parse_u16(i))(i)?;
                 Ok((i, IFDDataContents::UnsignedShort(x)))
             }
             IFDDataFormat::UnsignedLong => {
-                let (i, x) = alignment.parse_u32(i)?;
+                let (i, x) =
+                    context("IFDDataContents::UnsignedLong", |i| alignment.parse_u32(i))(i)?;
                 Ok((i, IFDDataContents::UnsignedLong(x)))
             }
             IFDDataFormat::UnsignedRational => {
-                let (i, (num, denom)) =
-                    tuple((|x| alignment.parse_u32(x), |x| alignment.parse_u32(x)))(i)?;
+                let (i, (num, denom)) = context(
+                    "IFDDataContents::UnsignedRational",
+                    tuple((|x| alignment.parse_u32(x), |x| alignment.parse_u32(x))),
+                )(i)?;
                 Ok((i, IFDDataContents::UnsignedRational(num, denom)))
             }
             IFDDataFormat::SignedByte => {
-                let (i, x) = alignment.parse_i8(i)?;
+                let (i, x) = context("IFDDataContents::SignedByte", |i| alignment.parse_i8(i))(i)?;
                 Ok((i, IFDDataContents::SignedByte(x)))
             }
             IFDDataFormat::Undefined => {
-                let x = i[..n_components].to_vec();
-                Ok((&i[n_components..], IFDDataContents::Undefined(x)))
+                let (i, x) = context("IFDDataContents::Undefined", take(n_components))(i)?;
+                Ok((i, IFDDataContents::Undefined(x.to_vec())))
             }
             IFDDataFormat::SignedShort => {
-                let (i, x) = alignment.parse_i16(i)?;
+                let (i, x) =
+                    context("IFDDataContents::SignedShort", |i| alignment.parse_i16(i))(i)?;
                 Ok((i, IFDDataContents::SignedShort(x)))
             }
             IFDDataFormat::SignedLong => {
-                let (i, x) = alignment.parse_i32(i)?;
+                let (i, x) = context("IFDDataContents::SignedLong", |i| alignment.parse_i32(i))(i)?;
                 Ok((i, IFDDataContents::SignedLong(x)))
             }
             IFDDataFormat::SignedRational => {
-                let (i, (num, denom)) =
-                    tuple((|x| alignment.parse_i32(x), |x| alignment.parse_i32(x)))(i)?;
+                let (i, (num, denom)) = context(
+                    "IFDDataContents::SignedRational",
+                    tuple((|x| alignment.parse_i32(x), |x| alignment.parse_i32(x))),
+                )(i)?;
                 Ok((i, IFDDataContents::SignedRational(num, denom)))
             }
             IFDDataFormat::SingleFloat => {
-                let (i, x) = alignment.parse_f32(i)?;
+                let (i, x) =
+                    context("IFDDataContents::SingleFloat", |i| alignment.parse_f32(i))(i)?;
                 Ok((i, IFDDataContents::SingleFloat(x)))
             }
             IFDDataFormat::DoubleFloat => {
-                let (i, x) = alignment.parse_f64(i)?;
+                let (i, x) =
+                    context("IFDDataContents::DoubleFloat", |i| alignment.parse_f64(i))(i)?;
                 Ok((i, IFDDataContents::DoubleFloat(x)))
             }
         }

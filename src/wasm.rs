@@ -4,6 +4,7 @@ use crate::{
     exif::{self, IFDDataContents, IFDDataFormat, IFDTag},
     JPEGFile,
 };
+use base64;
 use std::convert::TryFrom;
 use wasm_bindgen::prelude::*;
 
@@ -27,11 +28,12 @@ fn preprocess_ifd_entries(entries: &mut [exif::IFDEntry]) {
             }
             // Convert GPS coordinates to a single floating point value
             (_, IFDTag::GPSLatitude) | (_, IFDTag::GPSLongitude) => {
-                let coords: Result<Vec<_>, _> = e.content.iter().map(|x| f64::try_from(x)).collect();
+                let coords: Result<Vec<_>, _> =
+                    e.content.iter().map(|x| f64::try_from(x)).collect();
                 match coords {
                     Ok(coords) => {
                         if coords.len() != 3 {
-                            continue
+                            continue;
                         }
                         let (degrees, minutes, seconds) = (coords[0], coords[1], coords[2]);
                         let loc = exif::gps::degrees_to_decimal(degrees, minutes, seconds);

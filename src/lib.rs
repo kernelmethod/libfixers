@@ -2,7 +2,9 @@
 
 pub mod exif;
 pub mod jfif;
-mod parse;
+pub mod parse;
+#[allow(dead_code)]
+pub mod version;
 
 use jfif::JFIFSegment;
 
@@ -134,7 +136,7 @@ mod test {
         Ok(exif::gps::degrees_to_decimal(deg, min, sec))
     }
 
-    /// Ensure that we parse the _test/ex1.jpg image correctly
+    /// Ensure that we parse the test_images/ex1.jpg image correctly
     #[test]
     fn test_parse_example_1() {
         let file = parse_img("ex1.jpg");

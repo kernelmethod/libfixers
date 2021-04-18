@@ -226,7 +226,7 @@ mod test {
                     assert_eq!(parse_le_result, parse_unknown_le_result);
                     assert_eq!(parse_be_result, parse_unknown_be_result);
                 }
-                _ => { }
+                _ => {}
             }
         }
     }

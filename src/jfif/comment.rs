@@ -55,8 +55,8 @@ impl ParseableSegment for JPEGComment {
 
 #[cfg(test)]
 mod test {
-    use crate::jfif::{JFIFMarkerCode,ParseableSegment};
     use super::JPEGComment;
+    use crate::jfif::{JFIFMarkerCode, ParseableSegment};
 
     #[test]
     pub fn test_parse_comment() {
@@ -69,7 +69,8 @@ mod test {
                 // the size of the section
                 ((bmsg.len() + 2) as u16).to_be_bytes().to_vec(),
                 bmsg.to_vec(),
-            ].concat();
+            ]
+            .concat();
 
             assert!(JPEGComment::can_parse_segment(&c));
             let (_, jc) = JPEGComment::parse(&c).unwrap();

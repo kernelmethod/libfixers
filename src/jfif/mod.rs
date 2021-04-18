@@ -5,13 +5,13 @@ mod comment;
 mod marker_codes;
 mod xmp;
 
-pub use app0::{APP0Segment,JFIFData,JFXXData};
+use crate::{exif::ExifData, parse};
+pub use app0::{APP0Segment, JFIFData, JFXXData};
 pub use comment::JPEGComment;
 pub use marker_codes::JFIFMarkerCode;
-pub use xmp::XMPSegment;
-use crate::{exif::ExifData, parse};
 use nom::error::context;
 use std::fmt;
+pub use xmp::XMPSegment;
 
 pub trait ParseableSegment {
     /// Returns `true` if we believe that this `ParseableSegment` can parse this segment of the
