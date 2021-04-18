@@ -52,3 +52,32 @@ impl ParseableSegment for JPEGComment {
         Ok((i, result))
     }
 }
+
+#[cfg(test)]
+mod test {
+    use crate::jfif::{JFIFMarkerCode,ParseableSegment};
+    use super::JPEGComment;
+
+    #[test]
+    pub fn test_parse_comment() {
+        let run_test = |msg: &str| {
+            // Create a valid COM section using the input message
+            let bmsg = msg.as_bytes();
+            let c = vec![
+                JFIFMarkerCode::COM.as_bytes().to_vec(),
+                // Recall that the data section size = number of data bytes + 2 bytes to represent
+                // the size of the section
+                ((bmsg.len() + 2) as u16).to_be_bytes().to_vec(),
+                bmsg.to_vec(),
+            ].concat();
+
+            assert!(JPEGComment::can_parse_segment(&c));
+            let (_, jc) = JPEGComment::parse(&c).unwrap();
+            assert_eq!(jc.comment, msg);
+        };
+
+        run_test("hello, world!");
+        run_test("\x00goodbye\x00");
+        run_test("你好，世界!");
+    }
+}
